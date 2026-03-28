@@ -1,11 +1,16 @@
 #!/usr/bin/env node
 
 import { Command } from "commander";
-import { Farmbot } from "farmbot";
+import type { Farmbot } from "farmbot";
 import { EphemeralConnection, checkMoveRateLimit } from "./services/connection.js";
+
+/** Extract bot state tree — avoids repeating the cast */
+function getBotState(bot: Farmbot): Record<string, unknown> {
+  return (bot as unknown as { getState: () => Record<string, unknown> }).getState();
+}
 import { saveToken, loadToken, clearConfig } from "./services/config.js";
 import { withTimeout } from "./utils/timeout.js";
-import { MoveParamsSchema, HomeParamsSchema, LuaParamsSchema } from "./types/schemas.js";
+import { MoveParamsSchema, LuaParamsSchema } from "./types/schemas.js";
 import type { AppError, Result } from "./types/result.js";
 import type { OutputEnvelope } from "./types/schemas.js";
 
@@ -189,7 +194,7 @@ program
         return;
       }
 
-      const state = (connResult.data as unknown as { getState: () => Record<string, unknown> }).getState();
+      const state = getBotState(connResult.data);
       const pos = state["location_data.position"] as { x: number; y: number; z: number } | undefined;
       const busy = state["informational_settings.busy"] as boolean | undefined;
       const firmware = state["informational_settings.firmware_version"] as string | undefined;

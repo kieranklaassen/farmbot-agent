@@ -27,6 +27,11 @@ function mcpOk(text: string): ToolResult {
   return { content: [{ type: "text" as const, text }] };
 }
 
+/** Extract bot state tree — avoids repeating the cast 6 times */
+function getBotState(bot: Farmbot): Record<string, unknown> {
+  return getBotState(bot);
+}
+
 async function withBot<T>(
   fn: (bot: Farmbot) => Promise<Result<T>>,
 ): Promise<ToolResult> {
@@ -65,7 +70,7 @@ and the firmware version. Use this to check device state before issuing commands
   async () => {
     return withBot(async (bot) => {
       await withTimeout(bot.readStatus(), DEFAULT_TIMEOUT, "Read status");
-      const state = (bot as unknown as { getState: () => Record<string, unknown> }).getState();
+      const state = getBotState(bot);
       const pos = state["location_data.position"] as { x: number; y: number; z: number } | undefined;
       const busy = state["informational_settings.busy"] as boolean | undefined;
       const firmware = state["informational_settings.firmware_version"] as string | undefined;
@@ -94,7 +99,7 @@ X runs along the bed length, Y across the width, Z is height (0 = top, negative 
   async () => {
     return withBot(async (bot) => {
       await withTimeout(bot.readStatus(), DEFAULT_TIMEOUT, "Read position");
-      const state = (bot as unknown as { getState: () => Record<string, unknown> }).getState();
+      const state = getBotState(bot);
       const pos = state["location_data.position"] as { x: number; y: number; z: number } | undefined;
       return { ok: true as const, data: pos ?? { x: 0, y: 0, z: 0 } };
     });
@@ -212,7 +217,7 @@ Useful for understanding the FarmBot model and capabilities.`,
   async () => {
     return withBot(async (bot) => {
       await withTimeout(bot.readStatus(), DEFAULT_TIMEOUT, "Read device info");
-      const state = (bot as unknown as { getState: () => Record<string, unknown> }).getState();
+      const state = getBotState(bot);
 
       return {
         ok: true as const,
@@ -266,7 +271,7 @@ server.resource(
     }
 
     await withTimeout(connResult.data.readStatus(), DEFAULT_TIMEOUT, "Read status");
-    const state = (connResult.data as unknown as { getState: () => Record<string, unknown> }).getState();
+    const state = getBotState(connResult.data);
 
     return {
       contents: [{

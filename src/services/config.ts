@@ -31,17 +31,6 @@ export function loadToken(): string | null {
   }
 }
 
-/** Load server URL from config, default to https://my.farm.bot */
-export function loadServer(): string {
-  try {
-    const raw = readFileSync(CONFIG_PATH, "utf-8");
-    const config = JSON.parse(raw) as StoredConfig;
-    return config.server ?? "https://my.farm.bot";
-  } catch {
-    return "https://my.farm.bot";
-  }
-}
-
 /** Delete stored config (logout) */
 export function clearConfig(): void {
   try {
