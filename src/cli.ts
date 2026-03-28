@@ -10,6 +10,7 @@ function getBotState(bot: Farmbot): Record<string, unknown> {
 }
 import { saveToken, loadToken, clearConfig } from "./services/config.js";
 import { withTimeout } from "./utils/timeout.js";
+import { z } from "zod";
 import { MoveParamsSchema, LuaParamsSchema } from "./types/schemas.js";
 import type { AppError, Result } from "./types/result.js";
 import type { OutputEnvelope } from "./types/schemas.js";
@@ -132,9 +133,32 @@ program
         return;
       }
 
-      const data = (await response.json()) as {
-        token: { encoded: string; unencoded: { bot: string } };
-      };
+      const TokenResponseSchema = z.object({
+        token: z.object({
+          encoded: z.string(),
+          unencoded: z.object({ bot: z.string() }),
+        }),
+      });
+
+      const parsed = TokenResponseSchema.safeParse(await response.json());
+      if (!parsed.success) {
+        formatOutput(
+          "login",
+          {
+            ok: false,
+            error: {
+              code: "API_ERROR" as const,
+              message: "Unexpected API response format",
+              retryable: false,
+              hint: "The FarmBot API may have changed. Try updating farmbot-agent.",
+            },
+          },
+          json,
+        );
+        return;
+      }
+
+      const data = parsed.data;
       saveToken(data.token.encoded, opts.server);
 
       formatOutput(

@@ -301,8 +301,10 @@ main().catch((err) => {
 });
 
 // Graceful shutdown
-process.on("SIGINT", async () => {
+async function shutdown() {
   console.error("[farmbot-agent] Shutting down...");
   await connection.release();
   process.exit(0);
-});
+}
+process.on("SIGINT", shutdown);
+process.on("SIGTERM", shutdown);

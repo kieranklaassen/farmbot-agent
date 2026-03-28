@@ -13,10 +13,4 @@ export default defineConfig({
   splitting: true,
   sourcemap: true,
   shims: false,
-  banner: ({ format }) => {
-    if (format === "esm") {
-      return {};
-    }
-    return {};
-  },
 });

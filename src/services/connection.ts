@@ -69,22 +69,25 @@ export class EphemeralConnection implements ConnectionManager {
  */
 export class PersistentConnection implements ConnectionManager {
   private bot: Farmbot | null = null;
-  private connecting = false;
+  private connectPromise: Promise<Result<Farmbot>> | null = null;
 
   async acquire(): Promise<Result<Farmbot>> {
     if (this.bot) {
       return succeed(this.bot);
     }
 
-    if (this.connecting) {
-      return fail({
-        code: "DEVICE_BUSY",
-        message: "Connection in progress",
-        retryable: true,
-        hint: "Wait a moment and try again",
-      });
+    // If already connecting, let concurrent callers await the same promise
+    if (this.connectPromise) {
+      return this.connectPromise;
     }
 
+    this.connectPromise = this.doConnect();
+    const result = await this.connectPromise;
+    this.connectPromise = null;
+    return result;
+  }
+
+  private async doConnect(): Promise<Result<Farmbot>> {
     const token = loadToken();
     if (!token) {
       return fail({
@@ -95,11 +98,9 @@ export class PersistentConnection implements ConnectionManager {
       });
     }
 
-    this.connecting = true;
     try {
       this.bot = new Farmbot({ token });
       await this.bot.connect();
-      this.connecting = false;
 
       // Handle disconnection — clear the instance so next acquire() reconnects
       this.bot.on("offline", () => {
@@ -109,7 +110,7 @@ export class PersistentConnection implements ConnectionManager {
 
       return succeed(this.bot);
     } catch (err) {
-      this.connecting = false;
+      this.bot = null;
       const message =
         err instanceof Error ? err.message : "Failed to connect to FarmBot";
       return fail({
