@@ -6,4 +6,6 @@ export type { MoveParams, HomeParams, LuaParams, LoginParams, OutputEnvelope } f
 export { EphemeralConnection, PersistentConnection } from "./services/connection.js";
 export type { ConnectionManager } from "./services/connection.js";
 export { loadToken, saveToken, clearConfig } from "./services/config.js";
+export { readDeviceState } from "./services/device-state.js";
+export type { DeviceState } from "./services/device-state.js";
 export { withTimeout } from "./utils/timeout.js";

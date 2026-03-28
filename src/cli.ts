@@ -2,16 +2,12 @@
 
 import { Command } from "commander";
 import type { Farmbot } from "farmbot";
-import { EphemeralConnection, checkMoveRateLimit } from "./services/connection.js";
-
-/** Extract bot state tree — avoids repeating the cast */
-function getBotState(bot: Farmbot): Record<string, unknown> {
-  return (bot as unknown as { getState: () => Record<string, unknown> }).getState();
-}
-import { saveToken, loadToken, clearConfig } from "./services/config.js";
-import { withTimeout } from "./utils/timeout.js";
 import { z } from "zod";
-import { MoveParamsSchema, LuaParamsSchema } from "./types/schemas.js";
+import { EphemeralConnection, checkMoveRateLimit } from "./services/connection.js";
+import { saveToken, clearConfig } from "./services/config.js";
+import { withTimeout } from "./utils/timeout.js";
+import { MoveParamsSchema, HomeParamsSchema, LuaParamsSchema } from "./types/schemas.js";
+import { readDeviceState } from "./services/device-state.js";
 import type { AppError, Result } from "./types/result.js";
 import type { OutputEnvelope } from "./types/schemas.js";
 
@@ -89,8 +85,8 @@ const program = new Command()
   .name("farmbot")
   .description("Agent-native CLI for controlling FarmBot hardware")
   .version("0.1.0")
-  .option("--json", "Output as structured JSON", false)
-  .option("--timeout <ms>", "Command timeout in milliseconds", String(DEFAULT_TIMEOUT));
+  .option("-j, --json", "Output as structured JSON", false)
+  .option("-t, --timeout <ms>", "Command timeout in milliseconds", String(DEFAULT_TIMEOUT));
 
 function getOpts(): { json: boolean; timeout: number } {
   const opts = program.opts<{ json: boolean; timeout: string }>();
@@ -200,48 +196,55 @@ program
   .description("Show FarmBot device status: position, state, firmware")
   .action(async () => {
     const { json, timeout } = getOpts();
-    const conn = new EphemeralConnection();
-    const connResult = await conn.acquire();
-    if (!connResult.ok) {
-      formatOutput("status", connResult, json);
-      return;
-    }
+    await withConnection("status", json, async (bot) => {
+      const statusResult = await withTimeout(bot.readStatus(), timeout, "Read device status");
+      if (!statusResult.ok) return statusResult;
 
-    try {
-      const statusResult = await withTimeout(
-        connResult.data.readStatus(),
-        timeout,
-        "Read device status",
-      );
-      if (!statusResult.ok) {
-        formatOutput("status", statusResult, json);
-        return;
+      const ds = readDeviceState(bot);
+
+      if (!json) {
+        console.log(`Position: x=${ds.position.x} y=${ds.position.y} z=${ds.position.z}`);
+        console.log(`State: ${ds.locked ? "e-stopped" : ds.busy ? "busy" : "idle"}`);
+        console.log(`Firmware: ${ds.firmware}`);
       }
 
-      const state = getBotState(connResult.data);
-      const pos = state["location_data.position"] as { x: number; y: number; z: number } | undefined;
-      const busy = state["informational_settings.busy"] as boolean | undefined;
-      const firmware = state["informational_settings.firmware_version"] as string | undefined;
-      const locked = state["informational_settings.locked"] as boolean | undefined;
+      return { ok: true as const, data: ds };
+    });
+  });
 
-      if (json) {
-        formatOutput("status", {
-          ok: true as const,
-          data: {
-            position: pos ?? { x: 0, y: 0, z: 0 },
-            busy: busy ?? false,
-            locked: locked ?? false,
-            firmware: firmware ?? "unknown",
-          },
-        }, json);
-      } else {
-        console.log(`Position: x=${pos?.x ?? "?"} y=${pos?.y ?? "?"} z=${pos?.z ?? "?"}`);
-        console.log(`State: ${locked ? "e-stopped" : busy ? "busy" : "idle"}`);
-        console.log(`Firmware: ${firmware ?? "unknown"}`);
-      }
-    } finally {
-      await conn.release();
-    }
+program
+  .command("position")
+  .description("Get current FarmBot gantry position (x, y, z in mm)")
+  .action(async () => {
+    const { json, timeout } = getOpts();
+    await withConnection("position", json, async (bot) => {
+      const statusResult = await withTimeout(bot.readStatus(), timeout, "Read position");
+      if (!statusResult.ok) return statusResult;
+      return { ok: true as const, data: readDeviceState(bot).position };
+    });
+  });
+
+program
+  .command("device-info")
+  .description("Get device configuration: firmware, uptime, wifi")
+  .action(async () => {
+    const { json, timeout } = getOpts();
+    await withConnection("device-info", json, async (bot) => {
+      const statusResult = await withTimeout(bot.readStatus(), timeout, "Read device info");
+      if (!statusResult.ok) return statusResult;
+      const ds = readDeviceState(bot);
+      return {
+        ok: true as const,
+        data: {
+          controllerVersion: ds.controllerVersion,
+          firmware: ds.firmware,
+          busy: ds.busy,
+          locked: ds.locked,
+          uptime: ds.uptime,
+          wifi: ds.wifi,
+        },
+      };
+    });
   });
 
 program
@@ -250,7 +253,7 @@ program
   .requiredOption("--x <mm>", "X coordinate")
   .requiredOption("--y <mm>", "Y coordinate")
   .requiredOption("--z <mm>", "Z coordinate")
-  .option("--speed <percent>", "Speed 1-100")
+  .option("-s, --speed <percent>", "Speed 1-100")
   .option("--relative", "Move relative to current position")
   .action(async (opts: { x: string; y: string; z: string; speed?: string; relative?: boolean }) => {
     const { json, timeout } = getOpts();
@@ -290,19 +293,10 @@ program
       const moveSpeed = speed ?? 100;
 
       const result = relative
-        ? await withTimeout(
-            bot.moveRelative({ x, y, z, speed: moveSpeed }),
-            timeout,
-            "Move relative",
-          )
-        : await withTimeout(
-            bot.moveAbsolute({ x, y, z, speed: moveSpeed }),
-            timeout,
-            "Move absolute",
-          );
+        ? await withTimeout(bot.moveRelative({ x, y, z, speed: moveSpeed }), timeout, "Move relative")
+        : await withTimeout(bot.moveAbsolute({ x, y, z, speed: moveSpeed }), timeout, "Move absolute");
 
       if (!result.ok) return result;
-
       return {
         ok: true as const,
         data: { moved: relative ? "relative" : "absolute", position: { x, y, z }, speed: moveSpeed },
@@ -314,7 +308,7 @@ program
   .command("home")
   .description("Move FarmBot to home position (0, 0, 0)")
   .option("--axis <axis>", "Specific axis: x, y, z, or all", "all")
-  .option("--speed <percent>", "Speed 1-100", "100")
+  .option("-s, --speed <percent>", "Speed 1-100", "100")
   .action(async (opts: { axis: string; speed: string }) => {
     const { json, timeout } = getOpts();
 
@@ -324,24 +318,47 @@ program
       return;
     }
 
+    const params = HomeParamsSchema.safeParse({
+      axis: opts.axis,
+      speed: parseInt(opts.speed, 10),
+    });
+
+    if (!params.success) {
+      formatOutput(
+        "home",
+        {
+          ok: false,
+          error: {
+            code: "POSITION_OUT_OF_BOUNDS" as const,
+            message: `Invalid parameters: ${params.error.issues.map((i) => i.message).join(", ")}`,
+            retryable: false,
+          },
+        },
+        json,
+      );
+      return;
+    }
+
     await withConnection("home", json, async (bot) => {
+      const { axis, speed } = params.data;
+      const homeAxis = axis ?? "all";
       const result = await withTimeout(
-        bot.home({ axis: opts.axis as "x" | "y" | "z" | "all", speed: parseInt(opts.speed, 10) }),
+        bot.home({ axis: homeAxis, speed: speed ?? 100 }),
         timeout,
-        `Home ${opts.axis}`,
+        `Home ${homeAxis}`,
       );
       if (!result.ok) return result;
-      return { ok: true as const, data: { homed: opts.axis } };
+      return { ok: true as const, data: { homed: homeAxis } };
     });
   });
 
 program
   .command("e-stop")
+  .alias("estop")
   .description("Emergency stop — immediately halt all FarmBot movement")
   .action(async () => {
     const { json, timeout } = getOpts();
     await withConnection("e-stop", json, async (bot) => {
-      // E-stop is the highest priority command — short timeout
       const result = await withTimeout(bot.emergencyLock(), Math.min(timeout, 10_000), "Emergency stop");
       if (!result.ok) return result;
       return { ok: true as const, data: "Emergency stop activated. Run 'farmbot unlock' to resume." };

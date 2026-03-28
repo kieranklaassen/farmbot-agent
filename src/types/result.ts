@@ -27,6 +27,7 @@ export type AppError = {
     | "DEVICE_TIMEOUT"
     | "DEVICE_BUSY"
     | "DEVICE_E_STOPPED"
+    | "RATE_LIMITED"
     | "POSITION_OUT_OF_BOUNDS"
     | "RESOURCE_NOT_FOUND"
     | "MQTT_ERROR"

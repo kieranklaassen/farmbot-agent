@@ -133,21 +133,25 @@ export class PersistentConnection implements ConnectionManager {
   }
 }
 
-/** Rate limiter for movement commands — prevents runaway agent loops */
-const MOVE_RATE_LIMIT = 30; // max per minute
-let moveCount = 0;
-setInterval(() => {
-  moveCount = 0;
-}, 60_000).unref(); // unref so timer doesn't keep process alive
+/** Sliding window rate limiter — no module-level side effects */
+const MOVE_RATE_LIMIT = 30;
+const WINDOW_MS = 60_000;
+const moveTimestamps: number[] = [];
 
 export function checkMoveRateLimit(): Result<void> {
-  if (++moveCount > MOVE_RATE_LIMIT) {
+  const now = Date.now();
+  // Remove timestamps outside the window
+  while (moveTimestamps.length > 0 && (moveTimestamps[0] ?? 0) <= now - WINDOW_MS) {
+    moveTimestamps.shift();
+  }
+  if (moveTimestamps.length >= MOVE_RATE_LIMIT) {
     return fail({
-      code: "DEVICE_BUSY",
-      message: `Rate limit exceeded: ${MOVE_RATE_LIMIT} moves per minute`,
+      code: "RATE_LIMITED",
+      message: `Rate limit exceeded: ${MOVE_RATE_LIMIT} moves per ${WINDOW_MS / 1000}s window`,
       retryable: true,
       hint: "Wait before sending more move commands",
     });
   }
+  moveTimestamps.push(now);
   return succeed(undefined);
 }
