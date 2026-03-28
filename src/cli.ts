@@ -6,7 +6,19 @@ import { z } from "zod";
 import { EphemeralConnection, checkMoveRateLimit } from "./services/connection.js";
 import { saveToken, clearConfig } from "./services/config.js";
 import { withTimeout } from "./utils/timeout.js";
-import { MoveParamsSchema, HomeParamsSchema, LuaParamsSchema } from "./types/schemas.js";
+import {
+  MoveParamsSchema,
+  HomeParamsSchema,
+  LuaParamsSchema,
+  PinWriteSchema,
+  PinReadSchema,
+  PinToggleSchema,
+  FindHomeSchema,
+  CalibrateSchema,
+  AddPlantParamsSchema,
+  AddFarmEventParamsSchema,
+} from "./types/schemas.js";
+import { apiGet, apiPost, apiDelete } from "./services/api.js";
 import { readDeviceState } from "./services/device-state.js";
 import type { AppError, Result } from "./types/result.js";
 import type { OutputEnvelope } from "./types/schemas.js";
@@ -406,6 +418,547 @@ program
       if (!result.ok) return result;
       return { ok: true as const, data: result.data };
     });
+  });
+
+// ── Pin/GPIO Commands ──────────────────────────────────────────────
+
+const pinCmd = program
+  .command("pin")
+  .description("Read, write, or toggle GPIO pins");
+
+pinCmd
+  .command("write")
+  .description("Write a value to a GPIO pin")
+  .requiredOption("--pin <number>", "Pin number")
+  .requiredOption("--value <number>", "Pin value (0/1 digital, 0-255 analog)")
+  .option("--mode <mode>", "Pin mode: digital or analog", "digital")
+  .action(async (opts: { pin: string; value: string; mode: string }) => {
+    const { json, timeout } = getOpts();
+
+    const params = PinWriteSchema.safeParse({
+      pin: parseInt(opts.pin, 10),
+      value: parseInt(opts.value, 10),
+      mode: opts.mode,
+    });
+
+    if (!params.success) {
+      formatOutput(
+        "pin write",
+        {
+          ok: false,
+          error: {
+            code: "API_ERROR" as const,
+            message: `Invalid parameters: ${params.error.issues.map((i) => i.message).join(", ")}`,
+            retryable: false,
+          },
+        },
+        json,
+      );
+      return;
+    }
+
+    await withConnection("pin write", json, async (bot) => {
+      const pinMode = params.data.mode === "analog" ? 1 : 0;
+      const result = await withTimeout(
+        bot.writePin({ pin_number: params.data.pin, pin_value: params.data.value, pin_mode: pinMode }),
+        timeout,
+        `Write pin ${params.data.pin}`,
+      );
+      if (!result.ok) return result;
+      return {
+        ok: true as const,
+        data: { pin: params.data.pin, value: params.data.value, mode: params.data.mode ?? "digital" },
+      };
+    });
+  });
+
+pinCmd
+  .command("read")
+  .description("Read the value of a GPIO pin")
+  .requiredOption("--pin <number>", "Pin number")
+  .option("--mode <mode>", "Pin mode: digital or analog", "digital")
+  .action(async (opts: { pin: string; mode: string }) => {
+    const { json, timeout } = getOpts();
+
+    const params = PinReadSchema.safeParse({
+      pin: parseInt(opts.pin, 10),
+      mode: opts.mode,
+    });
+
+    if (!params.success) {
+      formatOutput(
+        "pin read",
+        {
+          ok: false,
+          error: {
+            code: "API_ERROR" as const,
+            message: `Invalid parameters: ${params.error.issues.map((i) => i.message).join(", ")}`,
+            retryable: false,
+          },
+        },
+        json,
+      );
+      return;
+    }
+
+    await withConnection("pin read", json, async (bot) => {
+      const pinMode = params.data.mode === "analog" ? 1 : 0;
+      const result = await withTimeout(
+        bot.readPin({ pin_number: params.data.pin, pin_mode: pinMode, label: `pin_${params.data.pin}` }),
+        timeout,
+        `Read pin ${params.data.pin}`,
+      );
+      if (!result.ok) return result;
+      return { ok: true as const, data: result.data };
+    });
+  });
+
+pinCmd
+  .command("toggle")
+  .description("Toggle a GPIO pin between on and off")
+  .requiredOption("--pin <number>", "Pin number")
+  .action(async (opts: { pin: string }) => {
+    const { json, timeout } = getOpts();
+
+    const params = PinToggleSchema.safeParse({
+      pin: parseInt(opts.pin, 10),
+    });
+
+    if (!params.success) {
+      formatOutput(
+        "pin toggle",
+        {
+          ok: false,
+          error: {
+            code: "API_ERROR" as const,
+            message: `Invalid parameters: ${params.error.issues.map((i) => i.message).join(", ")}`,
+            retryable: false,
+          },
+        },
+        json,
+      );
+      return;
+    }
+
+    await withConnection("pin toggle", json, async (bot) => {
+      const result = await withTimeout(
+        bot.togglePin({ pin_number: params.data.pin }),
+        timeout,
+        `Toggle pin ${params.data.pin}`,
+      );
+      if (!result.ok) return result;
+      return { ok: true as const, data: { pin: params.data.pin, toggled: true } };
+    });
+  });
+
+// ── Camera ────────────────────────────────────────────────────────
+
+program
+  .command("photo")
+  .description("Take a photo with the FarmBot camera")
+  .action(async () => {
+    const { json, timeout } = getOpts();
+    await withConnection("photo", json, async (bot) => {
+      const result = await withTimeout(bot.takePhoto(), timeout, "Take photo");
+      if (!result.ok) return result;
+      return { ok: true as const, data: "Photo captured." };
+    });
+  });
+
+// ── Calibration ───────────────────────────────────────────────────
+
+program
+  .command("find-home")
+  .description("Find home position using encoders or endstops")
+  .option("--axis <axis>", "Axis: x, y, z, or all", "all")
+  .option("-s, --speed <percent>", "Speed 1-100", "100")
+  .action(async (opts: { axis: string; speed: string }) => {
+    const { json, timeout } = getOpts();
+
+    const rateCheck = checkMoveRateLimit();
+    if (!rateCheck.ok) {
+      formatOutput("find-home", rateCheck, json);
+      return;
+    }
+
+    const params = FindHomeSchema.safeParse({
+      axis: opts.axis,
+      speed: parseInt(opts.speed, 10),
+    });
+
+    if (!params.success) {
+      formatOutput(
+        "find-home",
+        {
+          ok: false,
+          error: {
+            code: "POSITION_OUT_OF_BOUNDS" as const,
+            message: `Invalid parameters: ${params.error.issues.map((i) => i.message).join(", ")}`,
+            retryable: false,
+          },
+        },
+        json,
+      );
+      return;
+    }
+
+    await withConnection("find-home", json, async (bot) => {
+      const findAxis = params.data.axis ?? "all";
+      const result = await withTimeout(
+        bot.findHome({ axis: findAxis, speed: params.data.speed ?? 100 }),
+        timeout,
+        `Find home ${findAxis}`,
+      );
+      if (!result.ok) return result;
+      return { ok: true as const, data: { foundHome: findAxis } };
+    });
+  });
+
+program
+  .command("calibrate")
+  .description("Calibrate an axis by finding its length")
+  .requiredOption("--axis <axis>", "Axis to calibrate: x, y, or z")
+  .action(async (opts: { axis: string }) => {
+    const { json, timeout } = getOpts();
+
+    const rateCheck = checkMoveRateLimit();
+    if (!rateCheck.ok) {
+      formatOutput("calibrate", rateCheck, json);
+      return;
+    }
+
+    const params = CalibrateSchema.safeParse({ axis: opts.axis });
+
+    if (!params.success) {
+      formatOutput(
+        "calibrate",
+        {
+          ok: false,
+          error: {
+            code: "POSITION_OUT_OF_BOUNDS" as const,
+            message: `Invalid parameters: ${params.error.issues.map((i) => i.message).join(", ")}`,
+            retryable: false,
+          },
+        },
+        json,
+      );
+      return;
+    }
+
+    await withConnection("calibrate", json, async (bot) => {
+      const result = await withTimeout(
+        bot.calibrate({ axis: params.data.axis }),
+        timeout,
+        `Calibrate ${params.data.axis}`,
+      );
+      if (!result.ok) return result;
+      return { ok: true as const, data: { calibrated: params.data.axis } };
+    });
+  });
+
+// ── System ────────────────────────────────────────────────────────
+
+program
+  .command("sync")
+  .description("Sync device with the FarmBot web app")
+  .action(async () => {
+    const { json, timeout } = getOpts();
+    await withConnection("sync", json, async (bot) => {
+      const result = await withTimeout(bot.sync(), timeout, "Sync");
+      if (!result.ok) return result;
+      return { ok: true as const, data: "Device synced." };
+    });
+  });
+
+program
+  .command("reboot")
+  .description("Reboot the FarmBot device")
+  .action(async () => {
+    const { json, timeout } = getOpts();
+    await withConnection("reboot", json, async (bot) => {
+      const result = await withTimeout(bot.reboot(), timeout, "Reboot");
+      if (!result.ok) return result;
+      return { ok: true as const, data: "Reboot initiated." };
+    });
+  });
+
+// ── REST API Commands ──────────────────────────────────────────────
+
+// Plants
+const plantCmd = program
+  .command("plants")
+  .description("List all plants in the garden")
+  .action(async () => {
+    const { json } = getOpts();
+    const result = await apiGet<unknown[]>("points?filter=Plant");
+    formatOutput("plants", result, json);
+  });
+
+program
+  .command("plant")
+  .description("Manage individual plants")
+  .command("add")
+  .description("Add a new plant to the garden")
+  .requiredOption("--name <name>", "Plant name")
+  .requiredOption("--x <mm>", "X coordinate")
+  .requiredOption("--y <mm>", "Y coordinate")
+  .option("--z <mm>", "Z coordinate", "0")
+  .option("--radius <mm>", "Plant radius", "25")
+  .option("--openfarm-slug <slug>", "OpenFarm crop slug")
+  .action(
+    async (opts: {
+      name: string;
+      x: string;
+      y: string;
+      z: string;
+      radius: string;
+      openfarmSlug?: string;
+    }) => {
+      const { json } = getOpts();
+
+      const params = AddPlantParamsSchema.safeParse({
+        name: opts.name,
+        x: parseFloat(opts.x),
+        y: parseFloat(opts.y),
+        z: parseFloat(opts.z),
+        radius: parseFloat(opts.radius),
+        openfarm_slug: opts.openfarmSlug,
+      });
+
+      if (!params.success) {
+        formatOutput(
+          "plant add",
+          {
+            ok: false,
+            error: {
+              code: "API_ERROR" as const,
+              message: `Invalid parameters: ${params.error.issues.map((i) => i.message).join(", ")}`,
+              retryable: false,
+            },
+          },
+          json,
+        );
+        return;
+      }
+
+      const body = {
+        pointer_type: "Plant",
+        name: params.data.name,
+        x: params.data.x,
+        y: params.data.y,
+        z: params.data.z,
+        radius: params.data.radius,
+        openfarm_slug: params.data.openfarm_slug ?? "",
+      };
+
+      const result = await apiPost("points", body);
+      formatOutput("plant add", result, json);
+    },
+  );
+
+program
+  .command("plant-remove")
+  .description("Remove a plant by ID")
+  .argument("<id>", "Plant ID to remove")
+  .action(async (id: string) => {
+    const { json } = getOpts();
+    const plantId = parseInt(id, 10);
+    if (isNaN(plantId)) {
+      formatOutput(
+        "plant remove",
+        {
+          ok: false,
+          error: {
+            code: "API_ERROR" as const,
+            message: "Invalid plant ID — must be a number",
+            retryable: false,
+          },
+        },
+        json,
+      );
+      return;
+    }
+    const result = await apiDelete(`points/${plantId}`);
+    if (result.ok) {
+      formatOutput("plant remove", { ok: true as const, data: `Plant ${plantId} removed.` }, json);
+    } else {
+      formatOutput("plant remove", result, json);
+    }
+  });
+
+// Sequences
+program
+  .command("sequences")
+  .description("List all sequences")
+  .action(async () => {
+    const { json } = getOpts();
+    const result = await apiGet<unknown[]>("sequences");
+    formatOutput("sequences", result, json);
+  });
+
+program
+  .command("sequence-run")
+  .description("Run a sequence by ID (via MQTT)")
+  .argument("<id>", "Sequence ID to run")
+  .action(async (id: string) => {
+    const { json, timeout } = getOpts();
+    const seqId = parseInt(id, 10);
+    if (isNaN(seqId)) {
+      formatOutput(
+        "sequence run",
+        {
+          ok: false,
+          error: {
+            code: "API_ERROR" as const,
+            message: "Invalid sequence ID — must be a number",
+            retryable: false,
+          },
+        },
+        json,
+      );
+      return;
+    }
+    await withConnection("sequence run", json, async (bot) => {
+      const result = await withTimeout(bot.execSequence(seqId), timeout, `Run sequence ${seqId}`);
+      if (!result.ok) return result;
+      return { ok: true as const, data: { sequenceId: seqId, status: "completed" } };
+    });
+  });
+
+// Tools
+program
+  .command("tools")
+  .description("List all tools")
+  .action(async () => {
+    const { json } = getOpts();
+    const result = await apiGet<unknown[]>("tools");
+    formatOutput("tools", result, json);
+  });
+
+// Peripherals
+program
+  .command("peripherals")
+  .description("List all peripherals")
+  .action(async () => {
+    const { json } = getOpts();
+    const result = await apiGet<unknown[]>("peripherals");
+    formatOutput("peripherals", result, json);
+  });
+
+// Sensors
+program
+  .command("sensors")
+  .description("List all sensors")
+  .action(async () => {
+    const { json } = getOpts();
+    const result = await apiGet<unknown[]>("sensors");
+    formatOutput("sensors", result, json);
+  });
+
+// Farm Events
+program
+  .command("events")
+  .description("List all farm events")
+  .action(async () => {
+    const { json } = getOpts();
+    const result = await apiGet<unknown[]>("farm_events");
+    formatOutput("events", result, json);
+  });
+
+program
+  .command("event-add")
+  .description("Create a new farm event")
+  .requiredOption("--sequence-id <id>", "Sequence ID to run")
+  .requiredOption("--start <datetime>", "Start time in ISO 8601 format")
+  .option("--repeat <interval>", "Repeat: minutely, hourly, daily, weekly, monthly, yearly, never", "never")
+  .option("--end <datetime>", "End time in ISO 8601 format")
+  .action(
+    async (opts: {
+      sequenceId: string;
+      start: string;
+      repeat: string;
+      end?: string;
+    }) => {
+      const { json } = getOpts();
+
+      const params = AddFarmEventParamsSchema.safeParse({
+        sequence_id: parseInt(opts.sequenceId, 10),
+        start_time: opts.start,
+        repeat: opts.repeat,
+        end_time: opts.end,
+      });
+
+      if (!params.success) {
+        formatOutput(
+          "event add",
+          {
+            ok: false,
+            error: {
+              code: "API_ERROR" as const,
+              message: `Invalid parameters: ${params.error.issues.map((i) => i.message).join(", ")}`,
+              retryable: false,
+            },
+          },
+          json,
+        );
+        return;
+      }
+
+      const body: Record<string, unknown> = {
+        executable_id: params.data.sequence_id,
+        executable_type: "Sequence",
+        start_time: params.data.start_time,
+        time_unit: params.data.repeat === "never" ? "never" : params.data.repeat,
+        repeat: params.data.repeat === "never" ? 0 : 1,
+      };
+
+      if (params.data.end_time) {
+        body["end_time"] = params.data.end_time;
+      }
+
+      const result = await apiPost("farm_events", body);
+      formatOutput("event add", result, json);
+    },
+  );
+
+program
+  .command("event-remove")
+  .description("Remove a farm event by ID")
+  .argument("<id>", "Farm event ID to remove")
+  .action(async (id: string) => {
+    const { json } = getOpts();
+    const eventId = parseInt(id, 10);
+    if (isNaN(eventId)) {
+      formatOutput(
+        "event remove",
+        {
+          ok: false,
+          error: {
+            code: "API_ERROR" as const,
+            message: "Invalid event ID — must be a number",
+            retryable: false,
+          },
+        },
+        json,
+      );
+      return;
+    }
+    const result = await apiDelete(`farm_events/${eventId}`);
+    if (result.ok) {
+      formatOutput("event remove", { ok: true as const, data: `Farm event ${eventId} removed.` }, json);
+    } else {
+      formatOutput("event remove", result, json);
+    }
+  });
+
+// Device (REST API)
+program
+  .command("device")
+  .description("Show device configuration from the REST API")
+  .action(async () => {
+    const { json } = getOpts();
+    const result = await apiGet<unknown>("device");
+    formatOutput("device", result, json);
   });
 
 program.parse();
