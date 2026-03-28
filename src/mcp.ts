@@ -27,9 +27,9 @@ function mcpOk(text: string): ToolResult {
   return { content: [{ type: "text" as const, text }] };
 }
 
-/** Extract bot state tree — avoids repeating the cast 6 times */
+/** Extract bot state tree — avoids repeating the unsafe cast */
 function getBotState(bot: Farmbot): Record<string, unknown> {
-  return getBotState(bot);
+  return (bot as unknown as { getState: () => Record<string, unknown> }).getState();
 }
 
 async function withBot<T>(
@@ -67,6 +67,7 @@ server.tool(
 Returns position (x, y, z in mm), whether the device is busy or e-stopped,
 and the firmware version. Use this to check device state before issuing commands.`,
   {},
+  { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   async () => {
     return withBot(async (bot) => {
       await withTimeout(bot.readStatus(), DEFAULT_TIMEOUT, "Read status");
@@ -96,6 +97,7 @@ server.tool(
 Lighter than farmbot_status — use when you only need coordinates.
 X runs along the bed length, Y across the width, Z is height (0 = top, negative = into soil).`,
   {},
+  { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   async () => {
     return withBot(async (bot) => {
       await withTimeout(bot.readStatus(), DEFAULT_TIMEOUT, "Read position");
@@ -124,6 +126,7 @@ Returns the target position after movement completes.`,
     speed: z.number().min(1).max(100).optional().describe("Speed percentage 1-100 (default: 100)"),
     relative: z.boolean().optional().describe("Move relative to current position"),
   },
+  { destructiveHint: false, idempotentHint: true, openWorldHint: true },
   async ({ x, y, z: zPos, speed, relative }) => {
     const rateCheck = checkMoveRateLimit();
     if (!rateCheck.ok) {
@@ -155,6 +158,7 @@ After homing, the position is reset to 0 on the homed axis.`,
     axis: z.enum(["x", "y", "z", "all"]).optional().describe("Axis to home (default: all)"),
     speed: z.number().min(1).max(100).optional().describe("Speed percentage 1-100 (default: 100)"),
   },
+  { destructiveHint: false, idempotentHint: true, openWorldHint: true },
   async ({ axis, speed }) => {
     const rateCheck = checkMoveRateLimit();
     if (!rateCheck.ok) {
@@ -182,6 +186,7 @@ Use when something is going wrong — a collision, unexpected behavior, or safet
 The device will be locked until farmbot_unlock is called.
 This is the highest priority command and should always be available.`,
   {},
+  { destructiveHint: true, idempotentHint: true, openWorldHint: false },
   async () => {
     return withBot(async (bot) => {
       const result = await withTimeout(bot.emergencyLock(), 10_000, "Emergency stop");
@@ -198,6 +203,7 @@ server.tool(
 After calling farmbot_emergency_stop, the device is locked and will not respond
 to movement commands. Call this to unlock and resume normal operation.`,
   {},
+  { destructiveHint: false, idempotentHint: true, openWorldHint: false },
   async () => {
     return withBot(async (bot) => {
       const result = await withTimeout(bot.emergencyUnlock(), DEFAULT_TIMEOUT, "Unlock");
@@ -214,6 +220,7 @@ server.tool(
 Returns the device name, firmware version, and other configuration details.
 Useful for understanding the FarmBot model and capabilities.`,
   {},
+  { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   async () => {
     return withBot(async (bot) => {
       await withTimeout(bot.readStatus(), DEFAULT_TIMEOUT, "Read device info");
@@ -249,6 +256,7 @@ WARNING: This executes arbitrary code on the device. Use with caution.`,
   {
     code: z.string().describe("Lua code to execute on the FarmBot device"),
   },
+  { destructiveHint: true, idempotentHint: false, openWorldHint: true },
   async ({ code }) => {
     return withBot(async (bot) => {
       const result = await withTimeout(bot.lua(code), DEFAULT_TIMEOUT, "Lua execution");
