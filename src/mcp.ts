@@ -81,7 +81,7 @@ and the firmware version. Use this to check device state before issuing commands
   async () => {
     return withBot(async (bot) => {
       await withTimeout(bot.readStatus(), DEFAULT_TIMEOUT, "Read status");
-      return { ok: true as const, data: readDeviceState(bot) };
+      return { ok: true as const, data: await readDeviceState(bot) };
     });
   },
 );
@@ -97,7 +97,7 @@ X runs along the bed length, Y across the width, Z is height (0 = top, negative 
   async () => {
     return withBot(async (bot) => {
       await withTimeout(bot.readStatus(), DEFAULT_TIMEOUT, "Read position");
-      return { ok: true as const, data: readDeviceState(bot).position };
+      return { ok: true as const, data: (await readDeviceState(bot)).position };
     });
   },
 );
@@ -209,7 +209,7 @@ Useful for understanding the FarmBot model and capabilities.`,
   async () => {
     return withBot(async (bot) => {
       await withTimeout(bot.readStatus(), DEFAULT_TIMEOUT, "Read device info");
-      const ds = readDeviceState(bot);
+      const ds = await readDeviceState(bot);
       return {
         ok: true as const,
         data: {
@@ -638,7 +638,7 @@ server.resource(
     }
 
     await withTimeout(connResult.data.readStatus(), DEFAULT_TIMEOUT, "Read status");
-    const ds = readDeviceState(connResult.data);
+    const ds = await readDeviceState(connResult.data);
 
     return {
       contents: [{

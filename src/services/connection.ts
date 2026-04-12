@@ -1,5 +1,6 @@
 import { Farmbot } from "farmbot";
 import { loadToken } from "./config.js";
+import { attachStatusCache } from "./device-state.js";
 import { fail, succeed } from "../types/result.js";
 import type { Result } from "../types/result.js";
 
@@ -36,6 +37,7 @@ export class EphemeralConnection implements ConnectionManager {
 
     try {
       this.bot = new Farmbot({ token });
+      attachStatusCache(this.bot);
       await this.bot.connect();
       return succeed(this.bot);
     } catch (err) {
@@ -100,6 +102,7 @@ export class PersistentConnection implements ConnectionManager {
 
     try {
       this.bot = new Farmbot({ token });
+      attachStatusCache(this.bot);
       await this.bot.connect();
 
       // Handle disconnection — clear the instance so next acquire() reconnects

@@ -212,7 +212,7 @@ program
       const statusResult = await withTimeout(bot.readStatus(), timeout, "Read device status");
       if (!statusResult.ok) return statusResult;
 
-      const ds = readDeviceState(bot);
+      const ds = await readDeviceState(bot);
 
       if (!json) {
         console.log(`Position: x=${ds.position.x} y=${ds.position.y} z=${ds.position.z}`);
@@ -232,7 +232,7 @@ program
     await withConnection("position", json, async (bot) => {
       const statusResult = await withTimeout(bot.readStatus(), timeout, "Read position");
       if (!statusResult.ok) return statusResult;
-      return { ok: true as const, data: readDeviceState(bot).position };
+      return { ok: true as const, data: (await readDeviceState(bot)).position };
     });
   });
 
@@ -244,7 +244,7 @@ program
     await withConnection("device-info", json, async (bot) => {
       const statusResult = await withTimeout(bot.readStatus(), timeout, "Read device info");
       if (!statusResult.ok) return statusResult;
-      const ds = readDeviceState(bot);
+      const ds = await readDeviceState(bot);
       return {
         ok: true as const,
         data: {
