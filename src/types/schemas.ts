@@ -316,6 +316,146 @@ export const UpdateRegimenParamsSchema = z.object({
 });
 export type UpdateRegimenParams = z.infer<typeof UpdateRegimenParamsSchema>;
 
+// ── Generic point update (weed / generic / plant) ───────────────────
+
+export const UpdatePointParamsSchema = z.object({
+  id: z.number().describe("Point ID"),
+  name: z.string().optional(),
+  x: z.number().optional(),
+  y: z.number().optional(),
+  z: z.number().optional(),
+  radius: z.number().optional(),
+  meta: z.record(z.string()).optional(),
+});
+export type UpdatePointParams = z.infer<typeof UpdatePointParamsSchema>;
+
+// ── Sequences (CRUD) ─────────────────────────────────────────────────
+
+/**
+ * Create a sequence. The body field is FarmBot's CeleryScript AST — easiest
+ * source of truth is to read an existing sequence via farmbot_list_sequences
+ * and adapt its `body` array.
+ */
+export const AddSequenceParamsSchema = z.object({
+  name: z.string().describe("Sequence name"),
+  color: z
+    .enum(["blue", "green", "yellow", "orange", "purple", "pink", "gray", "red"])
+    .optional()
+    .describe("Display color (default: gray)"),
+  body: z
+    .array(z.record(z.unknown()))
+    .describe(
+      "CeleryScript body — array of step objects ({kind, args, body?}). For Lua-only sequences use [{kind:'lua', args:{lua:'<code>'}}].",
+    ),
+  args: z
+    .record(z.unknown())
+    .optional()
+    .describe("Sequence args/locals (parameter declarations). Optional for simple sequences."),
+});
+export type AddSequenceParams = z.infer<typeof AddSequenceParamsSchema>;
+
+export const UpdateSequenceParamsSchema = z.object({
+  id: z.number().describe("Sequence ID"),
+  name: z.string().optional(),
+  color: z
+    .enum(["blue", "green", "yellow", "orange", "purple", "pink", "gray", "red"])
+    .optional(),
+  body: z.array(z.record(z.unknown())).optional(),
+  args: z.record(z.unknown()).optional(),
+});
+export type UpdateSequenceParams = z.infer<typeof UpdateSequenceParamsSchema>;
+
+// ── Point groups (CRUD) ─────────────────────────────────────────────
+
+export const AddPointGroupParamsSchema = z.object({
+  name: z.string().describe("Group name"),
+  point_ids: z.array(z.number()).describe("IDs of points in the group"),
+  sort_type: z
+    .enum(["xy_ascending", "yx_ascending", "xy_descending", "yx_descending", "random", "nn"])
+    .optional()
+    .describe("Traversal order for sequences targeting this group (default: xy_ascending)"),
+  criteria: z
+    .record(z.unknown())
+    .optional()
+    .describe("Optional smart-group criteria (filter expression)"),
+});
+export type AddPointGroupParams = z.infer<typeof AddPointGroupParamsSchema>;
+
+export const UpdatePointGroupParamsSchema = z.object({
+  id: z.number().describe("Point group ID"),
+  name: z.string().optional(),
+  point_ids: z.array(z.number()).optional(),
+  sort_type: z
+    .enum(["xy_ascending", "yx_ascending", "xy_descending", "yx_descending", "random", "nn"])
+    .optional(),
+  criteria: z.record(z.unknown()).optional(),
+});
+export type UpdatePointGroupParams = z.infer<typeof UpdatePointGroupParamsSchema>;
+
+// ── Farm event update ───────────────────────────────────────────────
+
+export const UpdateFarmEventParamsSchema = z.object({
+  id: z.number().describe("Farm event ID"),
+  start_time: z.string().optional().describe("ISO 8601"),
+  end_time: z.string().optional().describe("ISO 8601"),
+  repeat: z.number().int().optional().describe("Repeat count (0 = single fire)"),
+  time_unit: z
+    .enum(["never", "minutely", "hourly", "daily", "weekly", "monthly", "yearly"])
+    .optional(),
+  executable_id: z.number().optional(),
+  executable_type: z.enum(["Sequence", "Regimen"]).optional(),
+});
+export type UpdateFarmEventParams = z.infer<typeof UpdateFarmEventParamsSchema>;
+
+// ── Tools / peripherals / sensors (CRUD) ────────────────────────────
+
+export const AddToolParamsSchema = z.object({
+  name: z.string().describe("Tool name (e.g. 'Watering Nozzle')"),
+  flow_rate_ml_per_s: z
+    .number()
+    .optional()
+    .describe("For watering tools — set so dispense() can compute durations"),
+});
+export type AddToolParams = z.infer<typeof AddToolParamsSchema>;
+
+export const UpdateToolParamsSchema = z.object({
+  id: z.number(),
+  name: z.string().optional(),
+  flow_rate_ml_per_s: z.number().optional(),
+  seeder_tip_z_offset: z.number().optional(),
+});
+export type UpdateToolParams = z.infer<typeof UpdateToolParamsSchema>;
+
+export const AddPeripheralParamsSchema = z.object({
+  pin: z.number().int().describe("GPIO pin number"),
+  label: z.string().describe("Peripheral name (e.g. 'Water', 'Lighting')"),
+  mode: z.number().int().min(0).max(1).optional().describe("0 = digital, 1 = analog (default: 0)"),
+});
+export type AddPeripheralParams = z.infer<typeof AddPeripheralParamsSchema>;
+
+export const UpdatePeripheralParamsSchema = z.object({
+  id: z.number(),
+  pin: z.number().int().optional(),
+  label: z.string().optional(),
+  mode: z.number().int().min(0).max(1).optional(),
+});
+export type UpdatePeripheralParams = z.infer<typeof UpdatePeripheralParamsSchema>;
+
+export const AddSensorParamsSchema = z.object({
+  pin: z.number().int(),
+  label: z.string(),
+  mode: z.number().int().min(0).max(1).optional(),
+});
+export type AddSensorParams = z.infer<typeof AddSensorParamsSchema>;
+
+export const UpdateSensorParamsSchema = z.object({
+  id: z.number(),
+  pin: z.number().int().optional(),
+  label: z.string().optional(),
+  mode: z.number().int().min(0).max(1).optional(),
+});
+export type UpdateSensorParams = z.infer<typeof UpdateSensorParamsSchema>;
+
 // ── Output envelope ──────────────────────────────────────────────────
 
 /** JSON output envelope */

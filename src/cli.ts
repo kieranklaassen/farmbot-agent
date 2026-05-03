@@ -1125,9 +1125,9 @@ addListCommand("sensor-readings", "sensor_readings", "List recorded sensor readi
 addListCommand("curves", "curves", "List water/spread/height curves");
 addGetByIdCommand("curve", (id) => `curves/${id}`, "Get a single curve by ID");
 addListCommand("alerts", "alerts", "List active alerts");
-addListCommand("farmwares", "farmware/installations", "List installed farmwares");
+addListCommand("farmwares", "farmware_installations", "List installed farmwares");
 addListCommand("farmware-envs", "farmware_envs", "List farmware env vars (camera calibration, weed detector thresholds)");
-addListCommand("diagnostic-dumps", "diagnostic_dumps", "List diagnostic dumps");
+addListCommand("diagnostic-dumps", "diagnostic_dumps", "List diagnostic dumps (may 404 on some servers)");
 addListCommand("telemetry", "telemetries", "List telemetry samples");
 addListCommand("saved-gardens", "saved_gardens", "List saved gardens");
 addListCommand("plant-templates", "plant_templates", "List plant_templates (members of saved gardens)");
@@ -1230,6 +1230,265 @@ program
   });
 
 addDeleteByIdCommand("regimen-remove", (id) => `regimens/${id}`, "Delete a regimen by ID");
+
+// ── Sequences (CRUD) ────────────────────────────────────────────────
+
+addGetByIdCommand("sequence", (id) => `sequences/${id}`, "Get a sequence by ID");
+
+program
+  .command("sequence-add")
+  .description("Create a sequence. --body is JSON CeleryScript array.")
+  .requiredOption("--name <name>")
+  .option("--color <color>", "blue|green|yellow|orange|purple|pink|gray|red", "gray")
+  .requiredOption("--body <json>", "JSON array of step objects")
+  .option("--args <json>", "Optional locals/args JSON")
+  .action(async (opts: { name: string; color: string; body: string; args?: string }) => {
+    const { json } = getOpts();
+    let body: unknown, argsObj: unknown;
+    try {
+      body = JSON.parse(opts.body);
+      argsObj = opts.args ? JSON.parse(opts.args) : { version: 20180209, locals: { kind: "scope_declaration", args: {} } };
+    } catch {
+      formatOutput("sequence add", { ok: false, error: { code: "API_ERROR" as const, message: "--body / --args must be valid JSON", retryable: false } }, json);
+      return;
+    }
+    const result = await apiPost("sequences", { name: opts.name, color: opts.color, body, args: argsObj });
+    formatOutput("sequence add", result, json);
+  });
+
+program
+  .command("sequence-update")
+  .description("Update a sequence. --changes JSON.")
+  .argument("<id>", "Sequence ID")
+  .requiredOption("--changes <json>")
+  .action(async (id: string, opts: { changes: string }) => {
+    const { json } = getOpts();
+    const idNum = parseInt(id, 10);
+    if (isNaN(idNum)) {
+      formatOutput("sequence update", { ok: false, error: { code: "API_ERROR" as const, message: "ID must be a number", retryable: false } }, json);
+      return;
+    }
+    let changes: unknown;
+    try { changes = JSON.parse(opts.changes); } catch {
+      formatOutput("sequence update", { ok: false, error: { code: "API_ERROR" as const, message: "--changes must be valid JSON", retryable: false } }, json);
+      return;
+    }
+    const result = await apiPatch(`sequences/${idNum}`, changes);
+    formatOutput("sequence update", result, json);
+  });
+
+addDeleteByIdCommand("sequence-remove", (id) => `sequences/${id}`, "Delete a sequence by ID");
+
+// ── Point groups (CRUD) ─────────────────────────────────────────────
+
+addGetByIdCommand("point-group", (id) => `point_groups/${id}`, "Get a point group by ID");
+
+program
+  .command("point-group-add")
+  .description("Create a point group with given member point IDs")
+  .requiredOption("--name <name>")
+  .requiredOption("--point-ids <csv>", "Comma-separated point IDs")
+  .option("--sort-type <type>", "xy_ascending|yx_ascending|xy_descending|yx_descending|random|nn", "xy_ascending")
+  .action(async (opts: { name: string; pointIds: string; sortType: string }) => {
+    const { json } = getOpts();
+    const ids = opts.pointIds.split(",").map((s) => parseInt(s.trim(), 10)).filter((n) => !isNaN(n));
+    const result = await apiPost("point_groups", {
+      name: opts.name,
+      point_ids: ids,
+      sort_type: opts.sortType,
+      criteria: { day: { op: "<", days_ago: 0 }, string_eq: {}, number_eq: {}, number_lt: {}, number_gt: {} },
+    });
+    formatOutput("point-group add", result, json);
+  });
+
+program
+  .command("point-group-update")
+  .description("Update a point group. --changes JSON.")
+  .argument("<id>")
+  .requiredOption("--changes <json>")
+  .action(async (id: string, opts: { changes: string }) => {
+    const { json } = getOpts();
+    const idNum = parseInt(id, 10);
+    if (isNaN(idNum)) {
+      formatOutput("point-group update", { ok: false, error: { code: "API_ERROR" as const, message: "ID must be a number", retryable: false } }, json);
+      return;
+    }
+    let changes: unknown;
+    try { changes = JSON.parse(opts.changes); } catch {
+      formatOutput("point-group update", { ok: false, error: { code: "API_ERROR" as const, message: "--changes must be JSON", retryable: false } }, json);
+      return;
+    }
+    const result = await apiPatch(`point_groups/${idNum}`, changes);
+    formatOutput("point-group update", result, json);
+  });
+
+addDeleteByIdCommand("point-group-remove", (id) => `point_groups/${id}`, "Delete a point group by ID");
+
+// ── point-update (generic) + event-update ───────────────────────────
+
+program
+  .command("point-update")
+  .description("Update any point's attributes (use plant-update for plants for plant_stage)")
+  .argument("<id>")
+  .option("--name <name>")
+  .option("--x <mm>")
+  .option("--y <mm>")
+  .option("--z <mm>")
+  .option("--radius <mm>")
+  .action(async (id: string, opts: Record<string, string | undefined>) => {
+    const { json } = getOpts();
+    const idNum = parseInt(id, 10);
+    if (isNaN(idNum)) {
+      formatOutput("point update", { ok: false, error: { code: "API_ERROR" as const, message: "ID must be a number", retryable: false } }, json);
+      return;
+    }
+    const changes: Record<string, unknown> = {};
+    if (opts["name"] !== undefined) changes["name"] = opts["name"];
+    if (opts["x"] !== undefined) changes["x"] = parseFloat(opts["x"]);
+    if (opts["y"] !== undefined) changes["y"] = parseFloat(opts["y"]);
+    if (opts["z"] !== undefined) changes["z"] = parseFloat(opts["z"]);
+    if (opts["radius"] !== undefined) changes["radius"] = parseFloat(opts["radius"]);
+    const result = await apiPatch(`points/${idNum}`, changes);
+    formatOutput("point update", result, json);
+  });
+
+program
+  .command("event-update")
+  .description("Update a farm event. --changes JSON.")
+  .argument("<id>")
+  .requiredOption("--changes <json>")
+  .action(async (id: string, opts: { changes: string }) => {
+    const { json } = getOpts();
+    const idNum = parseInt(id, 10);
+    if (isNaN(idNum)) {
+      formatOutput("event update", { ok: false, error: { code: "API_ERROR" as const, message: "ID must be a number", retryable: false } }, json);
+      return;
+    }
+    let changes: unknown;
+    try { changes = JSON.parse(opts.changes); } catch {
+      formatOutput("event update", { ok: false, error: { code: "API_ERROR" as const, message: "--changes must be JSON", retryable: false } }, json);
+      return;
+    }
+    const result = await apiPatch(`farm_events/${idNum}`, changes);
+    formatOutput("event update", result, json);
+  });
+
+// ── Tools / peripherals / sensors (CRUD) ────────────────────────────
+
+program
+  .command("tool-add")
+  .description("Register a tool")
+  .requiredOption("--name <name>")
+  .option("--flow-rate <ml/s>", "Flow rate in mL/s for watering tools")
+  .action(async (opts: { name: string; flowRate?: string }) => {
+    const { json } = getOpts();
+    const result = await apiPost("tools", {
+      name: opts.name,
+      flow_rate_ml_per_s: opts.flowRate ? parseFloat(opts.flowRate) : 0,
+    });
+    formatOutput("tool add", result, json);
+  });
+
+program
+  .command("tool-update")
+  .description("Update a tool. --changes JSON.")
+  .argument("<id>")
+  .requiredOption("--changes <json>")
+  .action(async (id: string, opts: { changes: string }) => {
+    const { json } = getOpts();
+    const idNum = parseInt(id, 10);
+    if (isNaN(idNum)) {
+      formatOutput("tool update", { ok: false, error: { code: "API_ERROR" as const, message: "ID must be a number", retryable: false } }, json);
+      return;
+    }
+    let changes: unknown;
+    try { changes = JSON.parse(opts.changes); } catch {
+      formatOutput("tool update", { ok: false, error: { code: "API_ERROR" as const, message: "--changes must be JSON", retryable: false } }, json);
+      return;
+    }
+    const result = await apiPatch(`tools/${idNum}`, changes);
+    formatOutput("tool update", result, json);
+  });
+
+addDeleteByIdCommand("tool-remove", (id) => `tools/${id}`, "Delete a tool by ID");
+
+program
+  .command("peripheral-add")
+  .description("Register a peripheral on a GPIO pin")
+  .requiredOption("--pin <pin>")
+  .requiredOption("--label <label>")
+  .option("--mode <mode>", "0 (digital) or 1 (analog)", "0")
+  .action(async (opts: { pin: string; label: string; mode: string }) => {
+    const { json } = getOpts();
+    const result = await apiPost("peripherals", {
+      pin: parseInt(opts.pin, 10),
+      label: opts.label,
+      mode: parseInt(opts.mode, 10),
+    });
+    formatOutput("peripheral add", result, json);
+  });
+
+program
+  .command("peripheral-update")
+  .description("Update a peripheral. --changes JSON.")
+  .argument("<id>")
+  .requiredOption("--changes <json>")
+  .action(async (id: string, opts: { changes: string }) => {
+    const { json } = getOpts();
+    const idNum = parseInt(id, 10);
+    if (isNaN(idNum)) {
+      formatOutput("peripheral update", { ok: false, error: { code: "API_ERROR" as const, message: "ID must be a number", retryable: false } }, json);
+      return;
+    }
+    let changes: unknown;
+    try { changes = JSON.parse(opts.changes); } catch {
+      formatOutput("peripheral update", { ok: false, error: { code: "API_ERROR" as const, message: "--changes must be JSON", retryable: false } }, json);
+      return;
+    }
+    const result = await apiPatch(`peripherals/${idNum}`, changes);
+    formatOutput("peripheral update", result, json);
+  });
+
+addDeleteByIdCommand("peripheral-remove", (id) => `peripherals/${id}`, "Delete a peripheral by ID");
+
+program
+  .command("sensor-add")
+  .description("Register a sensor on a GPIO pin")
+  .requiredOption("--pin <pin>")
+  .requiredOption("--label <label>")
+  .option("--mode <mode>", "0 (digital) or 1 (analog)", "0")
+  .action(async (opts: { pin: string; label: string; mode: string }) => {
+    const { json } = getOpts();
+    const result = await apiPost("sensors", {
+      pin: parseInt(opts.pin, 10),
+      label: opts.label,
+      mode: parseInt(opts.mode, 10),
+    });
+    formatOutput("sensor add", result, json);
+  });
+
+program
+  .command("sensor-update")
+  .description("Update a sensor. --changes JSON.")
+  .argument("<id>")
+  .requiredOption("--changes <json>")
+  .action(async (id: string, opts: { changes: string }) => {
+    const { json } = getOpts();
+    const idNum = parseInt(id, 10);
+    if (isNaN(idNum)) {
+      formatOutput("sensor update", { ok: false, error: { code: "API_ERROR" as const, message: "ID must be a number", retryable: false } }, json);
+      return;
+    }
+    let changes: unknown;
+    try { changes = JSON.parse(opts.changes); } catch {
+      formatOutput("sensor update", { ok: false, error: { code: "API_ERROR" as const, message: "--changes must be JSON", retryable: false } }, json);
+      return;
+    }
+    const result = await apiPatch(`sensors/${idNum}`, changes);
+    formatOutput("sensor update", result, json);
+  });
+
+addDeleteByIdCommand("sensor-remove", (id) => `sensors/${id}`, "Delete a sensor by ID");
 
 // ── execute_script + high-level setup ───────────────────────────────
 
